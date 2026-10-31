@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ghost</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; }
+  body { display: flex; align-items: center; justify-content: center; }
+  canvas { max-width: 100vw; max-height: 100vh; width: auto; height: auto; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+// ---------------- settings ----------------
+const CW = 5, CH = 8;           // size of one character cell (pixels)
+const COLS = 180, ROWS = 88;    // grid size
+const W = COLS * CW, H = ROWS * CH;
+const LOOP = 13.0;              // seconds per loop
+const RAMP = " .:-=+*#%@";
+
+const canvas = document.getElementById("c");
+canvas.width = W; canvas.height = H;
+const ctx = canvas.getContext("2d");
+
+// ---------------- helpers ----------------
+const clip = (v, a, b) => v < a ? a : (v > b ? b : v);
+const ss = (a, b, x) => { const t = clip((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
+const frac = v => v - Math.floor(v);
+const hash2 = (a, b) => frac(Math.sin(a * 127.1 + b * 311.7) * 43758.5453);
+function interp(x, xs, ys) {
+  if (x <= xs[0]) return ys[0];
+  for (let i = 1; i < xs.length; i++) {
+    if (x <= xs[i]) { const k = (x - xs[i - 1]) / (xs[i] - xs[i - 1]); return ys[i - 1] + k * (ys[i] - ys[i - 1]); }
+  }
+  return ys[ys.length - 1];
+}
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+
+// ---------------- coordinates ----------------
+const N = COLS * ROWS;
+const X = new Float32Array(N), Y = new Float32Array(N), GRAIN = new Float32Array(N), BRICK = new Float32Array(N);
+const rand = mulberry32(7);
+for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
+  const i = r * COLS + c;
+  X[i] = ((c + 0.5) * CW - W / 2) / (H / 2);   // height spans -1..1
+  Y[i] = ((r + 0.5) * CH - H / 2) / (H / 2);
+  GRAIN[i] = rand();
+}
+
+// ---------------- brick wall ----------------
+(function () {
+  const bh = 0.16, bw = 0.36;
+  for (let i = 0; i < N; i++) {
+    const row = Math.floor((Y[i] + 1) / bh);
+    const xo = X[i] + (row % 2) * bw / 2;
+    const col = Math.floor(xo / bw);
+    const fx = frac(xo / bw);
+    const fy = frac((Y[i] + 1) / bh);
+    const mortar = fx < 0.07 || fy < 0.18;
+    const tone = 0.45 + 0.55 * hash2(row, col);
+    const b = mortar ? 0.16 : 0.36 + 0.16 * tone;
+    BRICK[i] = b * (0.8 + 0.2 * GRAIN[i]);
+  }
+})();
+
+// ---------------- one frame -> brightness + mix ----------------
+const BRIGHT = new Float32Array(N), MIX = new Float32Array(N);
+const HW_X = [0, 0.06, 0.25, 0.55, 0.80, 0.93, 1.0];
+const HW_Y = [0.15, 0.20, 0.235, 0.20, 0.13, 0.06, 0.0];
+
+function field(t) {
+  t = t % LOOP;
+
+  // timeline
+  const wallIn = ss(3.2, 5.6, t);
+  const reveal = ss(1.2, 3.8, t);
+  const fadeOut = 1 - ss(10.6, 12.6, t);
+
+  // slow flicker + the odd flash
+  let flick = 0.9 + 0.1 * Math.sin(t * 23) * Math.sin(t * 7.3);
+  if ((t > 6.4 && t < 6.55) || (t > 8.8 && t < 8.9)) flick *= 1.35;
+
+  const sway = 0.012 * Math.sin(t * 0.9);
+  const breathe = 0.004 * Math.sin(t * 1.7);
+  const S = 1.25;                                 // figure scale
+  const fogIn = 0.22 * ss(2.0, 5.0, t);
+  const top = -0.62, bot = 0.40;
+  const cosA = Math.cos(0.45), sinA = Math.sin(0.45);
+
+  for (let i = 0; i < N; i++) {
+    const gx = X[i], gy = Y[i], gr = GRAIN[i];
+
+    // wall, lit from the middle
+    const vign = clip(1.15 - (gx * gx * 0.9 + gy * gy * 0.7), 0, 1);
+    let bright = BRICK[i] * vign * 1.15 * wallIn * flick;
+    let mix = 0;
+
+    // figure
+    const x = (gx - sway) / S;
+    const y = (gy - 0.22) / S - breathe;
+
+    const hood = ((x / 0.42) ** 2 + ((y + 0.25) / 0.58) ** 2) < 1;
+    const robe = y > 0.25 && Math.abs(x) < 0.30 + (y - 0.25) * 1.4;
+    const body = hood || robe;
+
+    const tt = (y - top) / (bot - top);
+    const hw = interp(tt, HW_X, HW_Y);
+    const ax = Math.abs(x);
+    const mask = tt > 0 && tt < 1 && ax < hw;
+    const edge = clip((hw - ax) / 0.02, 0, 1);
+
+    // figure shows up through a random per-cell dissolve
+    const vis = clip(reveal * 1.6 - gr * 0.6, 0, 1);
+    const visMask = clip(reveal * 1.8 - 0.5 - gr * 0.8, 0, 1);
+
+    if (body) bright *= (1 - 0.92 * vis);           // dark hood
+
+    if (mask && visMask > 0) {
+      // shading: bright centre, darker sides, soft top light
+      const q = x / Math.max(hw, 1e-3);
+      const nz = Math.sqrt(clip(1 - q * q, 0, 1));
+      let shade = (0.30 + 0.70 * Math.pow(nz, 0.6)) * (1 - 0.18 * ss(0.2, 1.0, tt));
+
+      let hole = false;
+      for (let sg = -1; sg <= 1; sg += 2) {
+        // drooping eyes
+        const ex = x - sg * 0.085, ey = y + 0.37;
+        const u = ex * cosA * 1 + ey * sg * sinA;
+        const v = -ex * sg * sinA + ey * cosA;
+        const s = clip(v / 0.085, -1, 1);
+        const half = 0.045 * (1.0 - 0.45 * s);
+        if (Math.abs(u) < half * Math.sqrt(clip(1 - s * s, 0, 1)) && Math.abs(v) < 0.085) hole = true;
+        // long tear-like streak under each eye
+        if (Math.abs(x - sg * 0.105) < 0.012 && y > -0.30 && y < -0.10) shade *= 0.55;
+        // nose slits
+        if (Math.abs(x - sg * 0.014) < 0.006 && Math.abs(y + 0.19) < 0.02) hole = true;
+      }
+
+      // stretched mouth
+      const sm = clip((y + 0.02) / 0.19, -1, 1);
+      const mw = 0.075 * Math.sqrt(clip(1 - sm * sm, 0, 1)) * (1.0 - 0.30 * sm);
+      if (Math.abs(x) < mw && Math.abs(y + 0.02) < 0.19) hole = true;
+
+      let face = hole ? 0.04 : shade * (0.90 + 0.10 * gr);
+      face *= (0.55 + 0.45 * edge);
+      if (((i / COLS) | 0) & 1) face *= 0.80;   // horizontal scan stripes
+      bright = face * visMask * flick;
+      mix = 1;
+    }
+
+    // fog
+    let f = Math.sin(gx * 5 + t * 0.7 + Math.sin(gy * 3 + t * 0.5)) + Math.sin(gx * 9 - t * 0.9 + gy * 4) * 0.6;
+    f = clip(0.5 + 0.25 * f, 0, 1) * ss(-0.1, 1.0, gy);
+    const fg = f * fogIn;
+
+    BRIGHT[i] = clip(bright + fg, 0, 1) * fadeOut;
+    MIX[i] = clip(mix + fg * 1.5, 0, 1);
+  }
+}
+
+// ---------------- drawing ----------------
+const brickRGB = [215, 100, 60], maskRGB = [235, 235, 245];
+const cache = new Map();
+function glyph(ci, mixLvl, shade) {
+  const key = ci * 100 + mixLvl * 10 + shade;
+  let g = cache.get(key);
+  if (!g) {
+    g = document.createElement("canvas"); g.width = CW; g.height = CH;
+    const gc = g.getContext("2d");
+    const k = mixLvl / 3, lum = 0.30 + 0.70 * shade / 7;
+    const col = brickRGB.map((b, j) => Math.floor((b + (maskRGB[j] - b) * k) * lum));
+    gc.fillStyle = `rgb(${col[0]},${col[1]},${col[2]})`;
+    gc.font = "bold 8px Consolas, 'Courier New', 'DejaVu Sans Mono', monospace";
+    gc.textAlign = "center"; gc.textBaseline = "middle";
+    gc.fillText(RAMP[ci], CW / 2, CH / 2 + 0.5);
+    cache.set(key, g);
+  }
+  return g;
+}
+
+const start = performance.now();
+function frame(now) {
+  const t = (now - start) / 1000;
+  field(t);
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, W, H);
+  for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
+    const i = r * COLS + c, b = BRIGHT[i];
+    const ci = Math.min(Math.floor(b * 9.99), 9);
+    if (ci <= 0) continue;
+    const ml = clip(Math.round(MIX[i] * 3), 0, 3);
+    const sh = clip(Math.floor(b * 7), 0, 7);
+    ctx.drawImage(glyph(ci, ml, sh), c * CW, r * CH);
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
