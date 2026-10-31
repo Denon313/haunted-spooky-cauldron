@@ -87,20 +87,31 @@ function seg(x, y, x1, y1, x2, y2, r) {
   const px = x1 + dx * t - x, py = y1 + dy * t - y;
   return px * px + py * py < r * r;
 }
-function inFig(px, py, sw) {
+function figId(px, py, sw) {            // 0 none, 1 coat/head, 2 hat, 3 ruff, 4 glove, 5 pompom
   const x = px - CX - sw, y = py;
-  if (y >= HT && y <= HT + 23) {                       // hood
+  if (y >= 102 && y <= 128) {                           // tall cone hat with a brim
+    const u = Math.min((y - 103) / 24, 1);
+    const ox = -3 * Math.pow(Math.max(0, 1 - u), 1.5);
+    let hw = y < 103 ? 0 : 9 * Math.pow(u, 0.9) + 0.5;
+    if (y >= 125) hw = 10.5;
+    if (Math.abs(x - ox) < hw) return 2;
+  }
+  if (Math.hypot(x + 3, y - 101) < 3.2) return 5;       // pompom on the hat
+  if (Math.hypot(x - 31, y - (HT + 21)) < 3.3) return 4;   // glove (raised hand)
+  if (Math.hypot(x + 24, y - (HT + 52)) < 3.3) return 4;   // glove (hanging hand)
+  { const ex = x / 15, ey = (y - 146.5) / 4.5; if (ex * ex + ey * ey < 1) return 3; }   // ruffled collar
+  if (y >= HT && y <= HT + 23) {                        // head
     const v = (y - (HT + 11.5)) / 11.5;
-    if (Math.abs(x) < 9 * Math.sqrt(Math.max(0, 1 - v * v))) return true;
+    if (Math.abs(x) < 9 * Math.sqrt(Math.max(0, 1 - v * v))) return 1;
   }
-  if (y >= HT + 20 && y <= 186) {                      // shoulders + coat
+  if (y >= HT + 20 && y <= 186) {                       // baggy coat
     const u = (y - (HT + 20)) / (186 - (HT + 20));
-    const hw = u < 0.18 ? 7.5 + Math.pow(u / 0.18, 0.6) * 10 : 17.5 + (u - 0.18) * 8.5;
-    if (Math.abs(x) < hw) return true;
+    const hw = u < 0.18 ? 8 + Math.pow(u / 0.18, 0.6) * 11 : 19 + (u - 0.18) * 9.5;
+    if (Math.abs(x) < hw) return 1;
   }
-  if (seg(x, y, 16, HT + 33, 30, HT + 22, 3.2)) return true;      // raised arm
-  if (seg(x, y, -17, HT + 33, -21, HT + 56, 3)) return true;      // hanging arm
-  return false;
+  if (seg(x, y, 16, HT + 33, 30, HT + 22, 4.2)) return 1;     // raised sleeve
+  if (seg(x, y, -18, HT + 33, -24, HT + 52, 4)) return 1;     // hanging sleeve
+  return 0;
 }
 
 // ---------------- eyes on the far shore ----------------
@@ -215,14 +226,31 @@ function render(t, fr) {
       }
 
       // ----- the figure -----
-      if (inFig(x, y, sw)) {
-        r = 3; g = 4; b = 6;
-        const rim = !inFig(x + 1.5, y, sw) || !inFig(x + 1, y - 1, sw);
-        const kB = Math.max(0, 1 - dBal / 70);
-        if (rim && y < 176) {
-          r = 52 + 190 * kB * 0.6; g = 60 + 10 * kB; b = 78 + 10 * kB;
+      const fid = figId(x, y, sw);
+      if (fid > 0) {
+        const kB = Math.max(0, 1 - dBal / 70), lx = x - CX - sw;
+        if (fid === 1) {
+          r = 3; g = 4; b = 6;
+          if (y > 150) {                                         // polka dots on the coat
+            const gx = (lx + 60) % 9, gy = y % 9;
+            if ((gx - 4.5) * (gx - 4.5) + (gy - 4.5) * (gy - 4.5) < 2.6) { r = 15; g = 20; b = 34; }
+          }
+          r += 24 * kB; g += kB;
+        } else if (fid === 2) {
+          const band = (Math.floor((y - 103) / 4) & 1);
+          r = band ? 20 : 9; g = band ? 9 : 6; b = band ? 15 : 14; r += 40 * kB;
+        } else if (fid === 5) {
+          r = 34 + 90 * kB; g = 32 + 6 * kB; b = 38 + 6 * kB;
+        } else if (fid === 3) {
+          const m = Math.sin(lx * 1.4) * 12, mo = lx > 0 ? 14 : 0;
+          r = 44 + m + mo + 110 * kB; g = 48 + m + mo + 8 * kB; b = 60 + m + mo + 8 * kB;
         } else {
-          r += 24 * kB; g += 1 * kB;
+          const dm = lx < 0 ? 0.5 : 1;
+          r = (120 + 110 * kB) * dm; g = (124 + 12 * kB) * dm; b = (136 + 10 * kB) * dm;
+        }
+        const rim = figId(x + 1.5, y, sw) === 0 || figId(x + 1, y - 1, sw) === 0;
+        if (rim && y < 176 && fid !== 4) {
+          r = 52 + 190 * kB * 0.6; g = 60 + 10 * kB; b = 78 + 10 * kB;
         }
       }
 
