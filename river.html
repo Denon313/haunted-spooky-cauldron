@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>River</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  canvas { display: block; width: 100vw; height: 100vh; object-fit: contain; image-rendering: pixelated; image-rendering: crisp-edges; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+// ---------------- setup ----------------
+const RW = 288, RH = 216;       // pixel-art resolution (scaled up by CSS)
+const HOR = 110;                // far shore / horizon line
+const MX = 214, MY = 40;        // moon
+const canvas = document.getElementById("c");
+canvas.width = RW; canvas.height = RH;
+const ctx = canvas.getContext("2d");
+const img = ctx.createImageData(RW, RH);
+const D = img.data;
+
+// ---------------- helpers ----------------
+const clamp = (v, a, b) => v < a ? a : (v > b ? b : v);
+const ss = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
+const frac = v => v - Math.floor(v);
+const hash = (x, y) => frac(Math.sin(x * 12.9898 + y * 78.233) * 43758.5453);
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+const BAYER = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
+
+// ---------------- tileable fog texture ----------------
+const FW = 256, FH = 64;
+const FOG = new Float32Array(FW * FH);
+(function () {
+  const rnd = mulberry32(21);
+  function layer(gw, gh, amp) {
+    const g = new Float32Array(gw * gh);
+    for (let i = 0; i < g.length; i++) g[i] = rnd();
+    for (let y = 0; y < FH; y++) for (let x = 0; x < FW; x++) {
+      const u = x / FW * gw, v = y / FH * gh;
+      const x0 = Math.floor(u), y0 = Math.floor(v);
+      const fx = u - x0, fy = v - y0;
+      const sx = fx * fx * (3 - 2 * fx), sy = fy * fy * (3 - 2 * fy);
+      const a = g[(y0 % gh) * gw + (x0 % gw)], b = g[(y0 % gh) * gw + ((x0 + 1) % gw)];
+      const c = g[((y0 + 1) % gh) * gw + (x0 % gw)], d = g[((y0 + 1) % gh) * gw + ((x0 + 1) % gw)];
+      const top = a + (b - a) * sx, bot = c + (d - c) * sx;
+      FOG[y * FW + x] += amp * (top + (bot - top) * sy);
+    }
+  }
+  layer(8, 4, 0.55); layer(16, 8, 0.30); layer(32, 16, 0.15);
+})();
+function fogAt(u, v) {
+  u = ((u % FW) + FW) % FW; v = ((v % FH) + FH) % FH;
+  const x0 = Math.floor(u), y0 = Math.floor(v);
+  const fx = u - x0, fy = v - y0;
+  const x1 = (x0 + 1) % FW, y1 = (y0 + 1) % FH;
+  const a = FOG[y0 * FW + x0], b = FOG[y0 * FW + x1], c = FOG[y1 * FW + x0], d = FOG[y1 * FW + x1];
+  const top = a + (b - a) * fx, bot = c + (d - c) * fx;
+  return top + (bot - top) * fy;
+}
+
+// ---------------- terrain ----------------
+const TREE = new Float32Array(RW), REED = new Float32Array(RW), BANK = new Float32Array(RW);
+for (let x = 0; x < RW; x++) {
+  const spike = Math.pow(1 - Math.abs(((x * 0.11) % 1) * 2 - 1), 1.4);
+  const hill = 0.5 + 0.5 * Math.sin(x * 0.021 + 1.3) * Math.sin(x * 0.047 + 0.4);
+  TREE[x] = HOR - 9 - 8 * hill - 9 * spike * (0.4 + 0.6 * hill);
+  const r = hash(x, 3.1), cl = fogAt(x * 3, 5);
+  REED[x] = ((x < 46 || x > 236) && r > 0.5 && cl > 0.4) ? 8 + r * 20 : 0;
+  BANK[x] = 176 + 3 * Math.sin(x * 0.04) + (x < 40 ? (40 - x) * 0.1 : 0);
+}
+
+// ---------------- the figure (seen from behind) ----------------
+const CX = 112, HT = 124;
+function seg(x, y, x1, y1, x2, y2, r) {
+  const dx = x2 - x1, dy = y2 - y1;
+  const t = clamp(((x - x1) * dx + (y - y1) * dy) / (dx * dx + dy * dy), 0, 1);
+  const px = x1 + dx * t - x, py = y1 + dy * t - y;
+  return px * px + py * py < r * r;
+}
+function inFig(px, py, sw) {
+  const x = px - CX - sw, y = py;
+  if (y >= HT && y <= HT + 23) {                       // hood
+    const v = (y - (HT + 11.5)) / 11.5;
+    if (Math.abs(x) < 9 * Math.sqrt(Math.max(0, 1 - v * v))) return true;
+  }
+  if (y >= HT + 20 && y <= 186) {                      // shoulders + coat
+    const u = (y - (HT + 20)) / (186 - (HT + 20));
+    const hw = u < 0.18 ? 7.5 + Math.pow(u / 0.18, 0.6) * 10 : 17.5 + (u - 0.18) * 8.5;
+    if (Math.abs(x) < hw) return true;
+  }
+  if (seg(x, y, 16, HT + 33, 30, HT + 22, 3.2)) return true;      // raised arm
+  if (seg(x, y, -17, HT + 33, -21, HT + 56, 3)) return true;      // hanging arm
+  return false;
+}
+
+// ---------------- eyes on the far shore ----------------
+const EYE_X = [58, 236, 170];
+
+// ---------------- render ----------------
+function render(t, fr) {
+  const sw = Math.sin(t * 0.5) * 0.6;
+  const balX = 139 + Math.sin(t * 0.8) * 2.5 + sw, balY = 96 + Math.sin(t * 1.1) * 1.5;
+  const handX = CX + sw + 31, handY = HT + 22;
+  const knotY = balY + 12;
+
+  const cyc = t % 22, eyeA = ss(9, 10.5, cyc) * (1 - ss(17.5, 19, cyc));
+  const eyePos = Math.floor(t / 22) % 3;
+  const EX = EYE_X[eyePos], EY = Math.min(TREE[EX] + 6, HOR - 3);
+  const blinkOpen = (frac(t / 3.1) > 0.04) ? 1 : 0;
+
+  for (let y = 0; y < RH; y++) {
+    for (let x = 0; x < RW; x++) {
+      let r, g, b;
+      const bank = BANK[x];
+      const dBal = Math.hypot(x - balX, y - balY);
+
+      if (y < HOR) {
+        // ----- sky -----
+        const p = (y / HOR) * (y / HOR);
+        r = 5 + 20 * p; g = 8 + 28 * p; b = 18 + 42 * p;
+        const dm = Math.hypot(x - MX, y - MY);
+        const halo = Math.exp(-dm * dm / 900) * 0.55 + Math.exp(-dm * dm / 90) * 0.35;
+        r += 110 * halo; g += 125 * halo; b += 150 * halo;
+        const cl = fogAt(x * 0.5 + t * 0.8 + 90, y * 1.4 + 10);
+        const cloud = ss(0.52, 0.78, cl);
+        r += cloud * 20; g += cloud * 26; b += cloud * 40;
+        if (dm < 13) {
+          const crater = fogAt(x * 4, y * 4 + 20);
+          const sh = (0.82 + 0.35 * (crater - 0.5)) * (1 - 0.6 * cloud);
+          r = 226 * sh; g = 228 * sh; b = 214 * sh;
+        } else {
+          const s = hash(x, y);
+          if (s > 0.9968) {
+            const tw = 0.5 + 0.5 * Math.sin(t * 2 + s * 400);
+            const val = (90 + 120 * tw) * (1 - cloud) * (1 - y / HOR * 0.8);
+            r += val; g += val; b += val;
+          }
+        }
+        if (y >= TREE[x]) {                                   // far treeline
+          const edge = y < TREE[x] + 1;
+          r = edge ? 10 : 3; g = edge ? 16 : 6; b = edge ? 24 : 9;
+        }
+      } else if (y < bank) {
+        // ----- river -----
+        const dy = y - HOR, p = dy / (RH - HOR);
+        const k0 = Math.exp(-dy / 18);
+        r = (4 + 16 * k0) * (1 - 0.5 * p); g = (9 + 22 * k0) * (1 - 0.5 * p); b = (15 + 34 * k0) * (1 - 0.5 * p);
+        const ln = Math.sin(dy * (1.6 + dy * 0.02) - t * 0.9 + Math.sin(x * 0.06 + dy * 0.2 + t * 0.3) * 2.2);
+        const spread = 5 + dy * 0.32, wob = Math.sin(dy * 0.45 + t * 1.1) * (1.5 + dy * 0.06);
+        const dxm = Math.abs(x - (MX + wob));
+        if (ln > 0.55 && dxm < spread) {
+          const k = (1 - dxm / spread) * (ln - 0.55) / 0.45 * Math.exp(-dy / 70);
+          r += 150 * k; g += 160 * k; b += 178 * k;
+        }
+        const soft = Math.exp(-dxm * dxm / (spread * spread * 1.3)) * Math.exp(-dy / 55) * 0.22;
+        r += 60 * soft; g += 66 * soft; b += 78 * soft;
+        const dxb = Math.abs(x - (balX + wob * 0.4)), sb = 4 + dy * 0.12;
+        if (ln > 0.35 && dxb < sb) {
+          const k = (1 - dxb / sb) * (ln - 0.35) / 0.65 * 0.55 * Math.exp(-dy / 45);
+          r += 190 * k; g += 12 * k; b += 14 * k;
+        }
+      } else {
+        // ----- near bank -----
+        const tuft = y < bank + 4 && hash(x, y) > 0.45;
+        r = tuft ? 11 : 5; g = tuft ? 18 : 8; b = tuft ? 11 : 6;
+      }
+      if (REED[x] > 0 && y > bank - REED[x] && y <= bank + 1) { r = 2; g = 4; b = 3; }
+
+      // ----- fog behind the figure -----
+      {
+        const f1 = fogAt(x * 0.7 + t * 2.5, y * 2.0 + 7);
+        const band = Math.exp(-((y - (HOR + 6)) * (y - (HOR + 6))) / (2 * 22 * 22));
+        const a = ss(0.35, 0.85, f1) * band * 0.62 + 0.10 * band;
+        const redTint = Math.exp(-dBal * dBal / 1800) * 0.35;
+        r += (46 + 150 * redTint - r) * a; g += (58 + 6 * redTint - g) * a; b += (76 + 8 * redTint - b) * a;
+      }
+
+      // ----- red glow of the balloon on everything near it -----
+      {
+        const gl = Math.exp(-dBal * dBal / 784) * 0.22;
+        r += 170 * gl; g += 8 * gl; b += 10 * gl;
+      }
+
+      // ----- string -----
+      if (y > knotY && y < handY) {
+        const u = (y - knotY) / (handY - knotY);
+        const sx = balX + (handX - balX) * u + Math.sin(u * 6.28 + t * 1.3) * 2 * (1 - u);
+        if (Math.abs(x - sx) < 0.6) { r = 120; g = 108; b = 100; }
+      }
+
+      // ----- balloon -----
+      {
+        const nx = (x - balX) / 10, ny = (y - balY) / 12, r2 = nx * nx + ny * ny;
+        if (r2 < 1) {
+          const nz = Math.sqrt(1 - r2);
+          const dot = clamp(nx * 0.55 + ny * -0.5 + nz * 0.67, 0, 1);
+          const spec = Math.pow(dot, 22) * 0.55;
+          let br = 55 + 190 * dot, bg = 4 + 22 * dot, bb = 6 + 26 * dot;
+          br += 255 * spec; bg += 255 * spec; bb += 255 * spec;
+          const fa = 0.18;                                       // thin fog over it
+          r = br + (46 - br) * fa; g = bg + (58 - bg) * fa; b = bb + (76 - bb) * fa;
+        } else if (y > balY + 11 && y < knotY + 2 && Math.abs(x - balX) < (y - (balY + 10)) * 0.9 && Math.abs(x - balX) < 2.5) {
+          r = 90; g = 6; b = 8;                                  // knot
+        }
+      }
+
+      // ----- the figure -----
+      if (inFig(x, y, sw)) {
+        r = 3; g = 4; b = 6;
+        const rim = !inFig(x + 1.5, y, sw) || !inFig(x + 1, y - 1, sw);
+        const kB = Math.max(0, 1 - dBal / 70);
+        if (rim && y < 176) {
+          r = 52 + 190 * kB * 0.6; g = 60 + 10 * kB; b = 78 + 10 * kB;
+        } else {
+          r += 24 * kB; g += 1 * kB;
+        }
+      }
+
+      // ----- low mist over the foreground -----
+      {
+        const f2 = fogAt(x * 0.5 - t * 3 + 40, y * 1.3 + 30);
+        const a = ss(0.4, 0.9, f2) * ss(150, 190, y) * 0.5;
+        r += (34 - r) * a; g += (42 - g) * a; b += (54 - b) * a;
+      }
+
+      // ----- eyes watching from the trees -----
+      if (eyeA > 0.01) {
+        for (let s = -1; s <= 1; s += 2) {
+          const ex = (x - (EX + s * 5)) / 2.4, ey = (y - EY) / 1.4;
+          if (blinkOpen && ex * ex + ey * ey < 1) {
+            r = Math.max(r, 255 * eyeA); g = Math.max(g, 230 * eyeA); b = Math.max(b, 110 * eyeA);
+          }
+        }
+        const h = Math.exp(-((x - EX) * (x - EX)) / 80 - ((y - EY) * (y - EY)) / 14) * 0.18 * eyeA * blinkOpen;
+        r += 255 * h; g += 235 * h; b += 120 * h;
+      }
+
+      // ----- vignette, film grain, dithered palette -----
+      const vx = x / RW - 0.5, vy = y / RH - 0.5;
+      const vig = clamp(1 - 0.55 * (vx * vx * 1.6 + vy * vy * 1.4) * 2, 0.35, 1);
+      const gr = (hash(x + (fr % 7) * 17.3, y * 1.3 + fr) - 0.5) * 6;
+      const bay = BAYER[(y & 3) * 4 + (x & 3)] / 16 - 0.5;
+      const LV = 12;
+      const o = (y * RW + x) * 4;
+      const cr = Math.pow(clamp((r * vig + gr) / 255, 0, 1), 0.85) * LV;
+      const cg = Math.pow(clamp((g * vig + gr) / 255, 0, 1), 0.85) * LV;
+      const cb = Math.pow(clamp((b * vig + gr) / 255, 0, 1), 0.85) * LV;
+      D[o]     = Math.floor(clamp(cr + bay + 0.5, 0, LV)) / LV * 255;
+      D[o + 1] = Math.floor(clamp(cg + bay + 0.5, 0, LV)) / LV * 255;
+      D[o + 2] = Math.floor(clamp(cb + bay + 0.5, 0, LV)) / LV * 255;
+      D[o + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
+let last = 0, frameNo = 0;
+const start = performance.now();
+function loop(now) {
+  if (now - last > 41) {                    // ~24 fps, like old pixel animation
+    last = now;
+    render((now - start) / 1000, frameNo++);
+  }
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
