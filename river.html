@@ -79,7 +79,7 @@ for (let x = 0; x < RW; x++) {
   BANK[x] = 176 + 3 * Math.sin(x * 0.04) + (x < 40 ? (40 - x) * 0.1 : 0);
 }
 
-// ---------------- the figure ----------------
+// ---------------- the figure (seen from behind) ----------------
 const CX = 112, HT = 124;
 function seg(x, y, x1, y1, x2, y2, r) {
   const dx = x2 - x1, dy = y2 - y1;
@@ -87,7 +87,7 @@ function seg(x, y, x1, y1, x2, y2, r) {
   const px = x1 + dx * t - x, py = y1 + dy * t - y;
   return px * px + py * py < r * r;
 }
-function figId(px, py, sw) {            // 0 none, 1 coat, 2 hat, 3 ruff, 4 glove, 5 pompom, 6 face, 7 nose, 8 wig, 9 eye, 10 grin
+function figId(px, py, sw) {            // 0 none, 1 coat/head, 2 hat, 3 ruff, 4 glove, 5 pompom
   const x = px - CX - sw, y = py;
   if (y >= 102 && y <= 128) {                           // tall cone hat with a brim
     const u = Math.min((y - 103) / 24, 1);
@@ -100,12 +100,10 @@ function figId(px, py, sw) {            // 0 none, 1 coat, 2 hat, 3 ruff, 4 glov
   if (Math.hypot(x - 31, y - (HT + 21)) < 3.3) return 4;   // glove (raised hand)
   if (Math.hypot(x + 24, y - (HT + 52)) < 3.3) return 4;   // glove (hanging hand)
   { const ex = x / 15, ey = (y - 146.5) / 4.5; if (ex * ex + ey * ey < 1) return 3; }   // ruffled collar
-  // head turned in profile, looking toward the river
-  if (Math.hypot(x - 11.5, y - 136.5) < 3.6) return 7;                 // big round red nose
-  if (Math.hypot((x - 5) * 0.85, (y - 131.5) * 1.25) < 2.9) return 9;            // dark eye socket
-  if (x > 0 && x < 10.5 && Math.abs(y - (142.2 - 0.09 * (x - 5.5) * (x - 5.5))) < 1.4 && Math.hypot(x, y - 135) < 10.4) return 10;   // painted grin
-  if (Math.hypot(x, y - 135) < 10) return x > -2 ? 6 : 8;              // white face / back of head
-  if (Math.hypot(x + 9, y - 131) < 5.5 || Math.hypot(x + 11, y - 139) < 5 || Math.hypot(x + 6, y - 126) < 4.5) return 8;   // curly wig
+  if (y >= HT && y <= HT + 23) {                        // head
+    const v = (y - (HT + 11.5)) / 11.5;
+    if (Math.abs(x) < 9 * Math.sqrt(Math.max(0, 1 - v * v))) return 1;
+  }
   if (y >= HT + 20 && y <= 186) {                       // baggy coat
     const u = (y - (HT + 20)) / (186 - (HT + 20));
     const hw = u < 0.18 ? 8 + Math.pow(u / 0.18, 0.6) * 11 : 19 + (u - 0.18) * 9.5;
@@ -246,25 +244,12 @@ function render(t, fr) {
         } else if (fid === 3) {
           const m = Math.sin(lx * 1.4) * 12, mo = lx > 0 ? 14 : 0;
           r = 44 + m + mo + 110 * kB; g = 48 + m + mo + 8 * kB; b = 60 + m + mo + 8 * kB;
-        } else if (fid === 6) {
-          const sh = 0.5 + 0.32 * clamp((lx + 2) / 12, 0, 1);
-          r = (150 + 95 * kB) * sh; g = (154 + 8 * kB) * sh; b = (170 + 8 * kB) * sh;
-        } else if (fid === 7) {
-          r = 205 + (lx > 12 && y < 136 ? 40 : 0); g = 14 + (lx > 12 && y < 136 ? 30 : 0); b = 20 + (lx > 12 && y < 136 ? 30 : 0);
-        } else if (fid === 8) {
-          const m = hash(x, y) * 10;
-          r = 24 + m + 40 * kB; g = 16 + m * 0.6; b = 40 + m;
-        } else if (fid === 9) {
-          r = 2; g = 2; b = 4;
-          if ((lx - 5) * (lx - 5) + (y - 131.5) * (y - 131.5) < 0.9) { r = 255; g = 225; b = 110; }
-        } else if (fid === 10) {
-          r = 205; g = 18; b = 24;
         } else {
           const dm = lx < 0 ? 0.5 : 1;
           r = (120 + 110 * kB) * dm; g = (124 + 12 * kB) * dm; b = (136 + 10 * kB) * dm;
         }
         const rim = figId(x + 1.5, y, sw) === 0 || figId(x + 1, y - 1, sw) === 0;
-        if (rim && y < 176 && (fid === 1 || fid === 2 || fid === 3 || fid === 5 || fid === 8)) {
+        if (rim && y < 176 && fid !== 4) {
           r = 52 + 190 * kB * 0.6; g = 60 + 10 * kB; b = 78 + 10 * kB;
         }
       }
