@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>Flashlight</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  body { display: flex; align-items: center; justify-content: center; }
+  canvas { max-width: 100vw; max-height: 100vh; width: auto; height: auto; touch-action: none; cursor: crosshair; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+// ---------------- settings ----------------
+const CW = 5, CH = 8;           // size of one character cell (pixels)
+const COLS = 180, ROWS = 88;    // grid size
+const W = COLS * CW, H = ROWS * CH;
+const RAMP = " .:-=+*#%@";
+const BEAM_R = 0.62;            // flashlight radius
+
+const canvas = document.getElementById("c");
+canvas.width = W; canvas.height = H;
+const ctx = canvas.getContext("2d");
+
+// ---------------- helpers ----------------
+const clip = (v, a, b) => v < a ? a : (v > b ? b : v);
+const ss = (a, b, x) => { const t = clip((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
+const frac = v => v - Math.floor(v);
+const hash2 = (a, b) => frac(Math.sin(a * 127.1 + b * 311.7) * 43758.5453);
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+
+// ---------------- coordinates ----------------
+const N = COLS * ROWS;
+const X = new Float32Array(N), Y = new Float32Array(N), GRAIN = new Float32Array(N);
+const BRICK = new Float32Array(N), TEXT = new Float32Array(N);
+const rand = mulberry32(13);
+for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
+  const i = r * COLS + c;
+  X[i] = ((c + 0.5) * CW - W / 2) / (H / 2);   // height spans -1..1
+  Y[i] = ((r + 0.5) * CH - H / 2) / (H / 2);
+  GRAIN[i] = rand();
+}
+const XMAX = W / H;
+
+// ---------------- brick wall ----------------
+(function () {
+  const bh = 0.16, bw = 0.36;
+  for (let i = 0; i < N; i++) {
+    const row = Math.floor((Y[i] + 1) / bh);
+    const xo = X[i] + (row % 2) * bw / 2;
+    const col = Math.floor(xo / bw);
+    const fx = frac(xo / bw);
+    const fy = frac((Y[i] + 1) / bh);
+    const mortar = fx < 0.07 || fy < 0.18;
+    const tone = 0.45 + 0.55 * hash2(row, col);
+    const b = mortar ? 0.16 : 0.40 + 0.22 * tone;
+    BRICK[i] = b * (0.8 + 0.2 * GRAIN[i]);
+  }
+})();
+
+// ---------------- messages written in blood ----------------
+(function () {
+  const off = document.createElement("canvas");
+  off.width = W; off.height = H;
+  const g = off.getContext("2d");
+  g.fillStyle = "#fff"; g.strokeStyle = "#fff"; g.lineCap = "round";
+  g.textAlign = "center"; g.textBaseline = "middle";
+  const msgs = [
+    ["BEHIND YOU",     0.30, 0.30, -0.06, 78],
+    ["HELP ME",        0.72, 0.60,  0.05, 84],
+    ["RUN",            0.24, 0.80, -0.04, 96],
+    ["HE IS WATCHING", 0.66, 0.16,  0.03, 54]
+  ];
+  const dr = mulberry32(5);
+  for (const [txt, fx, fy, rot, size] of msgs) {
+    g.save();
+    g.translate(fx * W, fy * H); g.rotate(rot);
+    g.font = `bold italic ${size}px Georgia, 'Times New Roman', serif`;
+    g.fillText(txt, 0, 0);
+    // drips running down from the letters
+    const wTxt = g.measureText(txt).width;
+    for (let k = 0; k < 9; k++) {
+      const dx = (dr() - 0.5) * wTxt * 0.9, len = 10 + dr() * 46;
+      g.lineWidth = 2 + dr() * 2;
+      g.beginPath(); g.moveTo(dx, size * 0.25); g.lineTo(dx, size * 0.25 + len); g.stroke();
+    }
+    g.restore();
+  }
+  const px = g.getImageData(0, 0, W, H).data;
+  for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
+    let s = 0;
+    for (let yy = 0; yy < CH; yy++) for (let xx = 0; xx < CW; xx++) {
+      s += px[(((r * CH + yy) * W) + (c * CW + xx)) * 4 + 3];
+    }
+    TEXT[r * COLS + c] = clip(s / (CW * CH * 255) * 1.6, 0, 1);
+  }
+})();
+
+// ---------------- flashlight (finger / mouse) ----------------
+let bx = 0, by = 0, tx = 0, ty = 0, touched = false;
+function aim(e) {
+  const rc = canvas.getBoundingClientRect();
+  tx = ((e.clientX - rc.left) / rc.width * 2 - 1) * XMAX;
+  ty = (e.clientY - rc.top) / rc.height * 2 - 1;
+  touched = true;
+}
+canvas.addEventListener("pointermove", aim);
+canvas.addEventListener("pointerdown", aim);
+
+// ---------------- the eyes in the dark ----------------
+const eyes = { x: 0.8, y: -0.1, alive: true, litFor: 0, respawnAt: 0 };
+function respawnEyes() {
+  for (let k = 0; k < 20; k++) {
+    const nx = (Math.random() * 2 - 1) * (XMAX - 0.2), ny = (Math.random() * 2 - 1) * 0.8;
+    if (Math.hypot(nx - bx, ny - by) > BEAM_R * 1.6) { eyes.x = nx; eyes.y = ny; break; }
+  }
+  eyes.alive = true; eyes.litFor = 0;
+}
+
+// ---------------- one frame -> brightness + palette ----------------
+const BRIGHT = new Float32Array(N), PAL = new Uint8Array(N);   // PAL: 0 wall, 1 blood, 2 eyes
+
+function field(t, dt) {
+  // flashlight position: wanders by itself until the first touch
+  if (!touched) {
+    tx = Math.sin(t * 0.45) * (XMAX - 0.3) * 0.9;
+    ty = Math.sin(t * 0.31 + 1.0) * 0.75;
+  }
+  const k = 1 - Math.exp(-dt * 9);
+  bx += (tx - bx) * k; by += (ty - by) * k;
+
+  // flicker, plus rare moments when the light nearly dies
+  let flick = 0.92 + 0.08 * Math.sin(t * 31) * Math.sin(t * 5.3);
+  if (Math.sin(t * 0.9) * Math.sin(t * 2.3) > 0.96) flick *= 0.25;
+
+  // eyes: vanish when the light touches them, come back somewhere else
+  const dEye = Math.hypot(eyes.x - bx, eyes.y - by);
+  if (eyes.alive) {
+    eyes.litFor = dEye < BEAM_R * 0.8 ? eyes.litFor + dt : 0;
+    if (eyes.litFor > 0.25) { eyes.alive = false; eyes.respawnAt = t + 1.5 + Math.random() * 2.5; }
+  } else if (t > eyes.respawnAt) respawnEyes();
+  const blink = (Math.sin(t * 1.3) > 0.985 || Math.sin(t * 0.77 + 2) > 0.99) ? 0 : 1;
+
+  for (let i = 0; i < N; i++) {
+    const gx = X[i], gy = Y[i];
+    const d = Math.hypot(gx - bx, gy - by);
+    const beam = Math.pow(clip(1 - d / BEAM_R, 0, 1), 1.5) * flick;
+    // ragged edge so it looks like a real beam hitting rough brick
+    const lit = beam * (0.85 + 0.15 * GRAIN[i]);
+
+    let bright = BRICK[i] * (0.02 + lit * 1.7);
+    let pal = 0;
+
+    const tx_ = TEXT[i];
+    if (tx_ > 0.05 && lit > 0.02) {
+      bright = Math.max(bright, tx_ * (0.25 + lit * 0.9));
+      pal = 1;
+    }
+
+    // glowing eyes (two ellipses)
+    if (eyes.alive && blink) {
+      for (let s = -1; s <= 1; s += 2) {
+        const ex = (gx - (eyes.x + s * 0.08)) / 0.040, ey = (gy - eyes.y) / 0.022;
+        const e2 = ex * ex + ey * ey;
+        if (e2 < 1) { bright = Math.max(bright, 0.95 * (1 - 0.4 * e2)); pal = 2; }
+        else if (e2 < 3 && pal !== 2) { bright = Math.max(bright, 0.12 * (3 - e2) / 2); pal = 2; }
+      }
+    }
+
+    BRIGHT[i] = clip(bright, 0, 1);
+    PAL[i] = pal;
+  }
+}
+
+// ---------------- drawing ----------------
+const COLORS = [[205, 160, 115], [225, 20, 20], [255, 240, 150]];
+const cache = new Map();
+function glyph(ci, pal, shade) {
+  const key = ci * 100 + pal * 10 + shade;
+  let g = cache.get(key);
+  if (!g) {
+    g = document.createElement("canvas"); g.width = CW; g.height = CH;
+    const gc = g.getContext("2d");
+    const lum = 0.30 + 0.70 * shade / 7;
+    const col = COLORS[pal].map(v => Math.floor(v * lum));
+    gc.fillStyle = `rgb(${col[0]},${col[1]},${col[2]})`;
+    gc.font = "bold 8px Consolas, 'Courier New', 'DejaVu Sans Mono', monospace";
+    gc.textAlign = "center"; gc.textBaseline = "middle";
+    gc.fillText(RAMP[ci], CW / 2, CH / 2 + 0.5);
+    cache.set(key, g);
+  }
+  return g;
+}
+
+let last = performance.now();
+const start = last;
+function frame(now) {
+  const dt = Math.min((now - last) / 1000, 0.1); last = now;
+  field((now - start) / 1000, dt);
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, W, H);
+  for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
+    const i = r * COLS + c, b = BRIGHT[i];
+    const ci = Math.min(Math.floor(b * 9.99), 9);
+    if (ci <= 0) continue;
+    ctx.drawImage(glyph(ci, PAL[i], clip(Math.floor(b * 7), 0, 7)), c * CW, r * CH);
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
